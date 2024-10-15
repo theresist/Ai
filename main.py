@@ -3,7 +3,6 @@ import telebot
 import requests
 import time
 import tempfile
-import instaloader
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -237,7 +236,6 @@ def send_welcome(message):
         bot.reply_to(message, "Welcome! You can use the following commands:\n"
                               "/m [direct download link] - Upload file directly to Google Drive\n"
                               "/l [direct download link] - Upload file directly to Telegram\n"
-                              "/ig [Instagram link] - Download Instagram post/reel and upload to Telegram\n"
                               "/addsudo [user_id] - Add a user as sudo\n"
                               "/lz [direct download link] - Unzip file and upload to Telegram\n"
                               "/mz [direct download link] - Unzip file and upload to Google Drive\n"
