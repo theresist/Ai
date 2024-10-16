@@ -3,24 +3,18 @@ import telebot
 import requests
 import time
 import tempfile
+import threading
+import uuid  # For generating unique GIDs
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-import threading
-import uuid  # To generate unique gid
 
 # Telegram bot token and owner ID
 TOKEN = '6863982081:AAEQTE4Nv8aMsFn1AMtIJrlwCX9HWIPNPIs'  # Replace with your actual bot token
 OWNER_ID = 5264219629  # Replace with your actual Telegram user ID
 bot = telebot.TeleBot(TOKEN)
-
-# Store sudo users
-sudo_users = [OWNER_ID]  # The owner starts as the only sudo user
-
-# Dictionary to keep track of active tasks
-active_tasks = {}
 
 # Google Drive API setup
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -49,7 +43,7 @@ def calculate_speed(bytes_transferred, elapsed_time):
         return f"{speed / (1024 * 1024):.2f} MB/s"
     return "0 MB/s"
 
-# Progress bar for downloading files with status update in the same message
+# Progress bar for downloading files
 def download_file_with_progress(url, temp_file_path, chat_id, message_id, gid):
     response = requests.get(url, stream=True)
     total_size = int(response.headers.get('content-length', 0))
@@ -59,12 +53,6 @@ def download_file_with_progress(url, temp_file_path, chat_id, message_id, gid):
 
     with open(temp_file_path, 'wb') as f:
         for data in response.iter_content(chunk_size=chunk_size):
-            # Check if the task has been canceled
-            if active_tasks.get(gid) == "cancel":
-                bot.edit_message_text(f"Download task with gid '{gid}' canceled!", chat_id=chat_id, message_id=message_id)
-                os.remove(temp_file_path)
-                return
-
             f.write(data)
             downloaded_size += len(data)
             progress = int(downloaded_size * 100 / total_size)
@@ -77,7 +65,7 @@ def download_file_with_progress(url, temp_file_path, chat_id, message_id, gid):
             bot.edit_message_text(status_message, chat_id=chat_id, message_id=message_id)
             time.sleep(1)  # Avoid spamming updates too quickly
 
-# Upload file to Google Drive with status update in the same message
+# Upload file to Google Drive
 def upload_file_to_gdrive(file_name, file_path, drive_service, chat_id, message_id, gid, parent_folder_id=None):
     file_metadata = {'name': file_name}
     if parent_folder_id:
@@ -92,11 +80,6 @@ def upload_file_to_gdrive(file_name, file_path, drive_service, chat_id, message_
     total_size = os.path.getsize(file_path)
     
     while response is None:
-        # Check if the task has been canceled
-        if active_tasks.get(gid) == "cancel":
-            bot.edit_message_text(f"Upload task with gid '{gid}' canceled!", chat_id=chat_id, message_id=message_id)
-            return
-
         status, response = request.next_chunk()
         if status:
             uploaded_size = status.resumable_progress
@@ -114,39 +97,23 @@ def upload_file_to_gdrive(file_name, file_path, drive_service, chat_id, message_
 
 # Ensure user is owner or sudo
 def is_sudo(user_id):
-    return user_id in sudo_users
+    return user_id == OWNER_ID
 
 # Handle /cancel command to cancel tasks
 @bot.message_handler(commands=['cancel'])
 def handle_cancel_task(message):
+    bot.reply_to(message, "Cancelling task is not implemented yet.")
+
+# Handle /start command
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
     if is_sudo(message.from_user.id):
-        try:
-            gid = message.text.split()[1]
-            if gid in active_tasks:
-                active_tasks[gid] = "cancel"
-                bot.reply_to(message, f"Task with gid '{gid}' is being canceled.")
-            else:
-                bot.reply_to(message, f"No active task found with gid '{gid}'.")
-        except IndexError:
-            bot.reply_to(message, "Please provide a gid. Example: /cancel <gid>")
-    else:
-        bot.reply_to(message, "You do not have permission to use this command.")
+        bot.reply_to(message, "Welcome! You can use the following commands:\n"
+                              "/m [direct download link] - Upload file directly to Google Drive\n"
+                              "/l [direct download link] - Upload file directly to Telegram\n"
+                              "/cancel <gid> - Cancel a specific task by gid")
 
-# Handle /cancelall command to cancel all tasks (only for the owner)
-@bot.message_handler(commands=['cancelall'])
-def handle_cancel_all_tasks(message):
-    if message.from_user.id == OWNER_ID:
-        if active_tasks:
-            # Cancel all active tasks
-            for gid in active_tasks:
-                active_tasks[gid] = "cancel"
-            bot.reply_to(message, "All active tasks are being canceled.")
-        else:
-            bot.reply_to(message, "There are no active tasks to cancel.")
-    else:
-        bot.reply_to(message, "Only the owner can use this command.")
-
-# Handle /m command: Upload files directly to Google Drive using a direct download link with status update
+# Handle /m command: Upload files directly to Google Drive
 @bot.message_handler(commands=['m'])
 def handle_upload_to_gdrive(message):
     if is_sudo(message.from_user.id):
@@ -156,10 +123,7 @@ def handle_upload_to_gdrive(message):
             msg = bot.reply_to(message, f"Task GID: {gid}\nPreparing to download and upload the file to Google Drive...")
 
             file_name = url.split("/")[-1]
-            temp_file_path = os.path.join(tempfile.gettempdir(), file_name)
-
-            # Register the task
-            active_tasks[gid] = "active"
+            temp_file_path = tempfile.mktemp()  # Use system temp directory
 
             # Create a new thread for downloading and uploading to avoid blocking
             def task():
@@ -180,16 +144,14 @@ def handle_upload_to_gdrive(message):
                     bot.reply_to(message, f"An error occurred: {str(e)}")
                 finally:
                     # Remove task from active tasks
-                    active_tasks.pop(gid, None)
+                    os.remove(temp_file_path)
 
             threading.Thread(target=task).start()
 
         except Exception as e:
             bot.reply_to(message, f"An error occurred: {str(e)}")
-    else:
-        bot.reply_to(message, "You do not have permission to use this command.")
 
-# Handle /l command: Upload file directly to Telegram from a direct download link with status update
+# Handle /l command: Upload files directly to Telegram
 @bot.message_handler(commands=['l'])
 def handle_upload_to_telegram(message):
     if is_sudo(message.from_user.id):
@@ -199,10 +161,7 @@ def handle_upload_to_telegram(message):
             msg = bot.reply_to(message, f"Task GID: {gid}\nPreparing to download and upload the file to Telegram...")
 
             file_name = url.split("/")[-1]
-            temp_file_path = os.path.join(tempfile.gettempdir(), file_name)
-
-            # Register the task
-            active_tasks[gid] = "active"
+            temp_file_path = tempfile.mktemp()  # Use system temp directory
 
             # Create a new thread for downloading and uploading to avoid blocking
             def task():
@@ -220,30 +179,12 @@ def handle_upload_to_telegram(message):
                     bot.reply_to(message, f"An error occurred: {str(e)}")
                 finally:
                     # Remove task from active tasks
-                    active_tasks.pop(gid, None)
+                    os.remove(temp_file_path)
 
             threading.Thread(target=task).start()
 
         except Exception as e:
             bot.reply_to(message, f"An error occurred: {str(e)}")
-    else:
-        bot.reply_to(message, "You do not have permission to use this command.")
-
-# Command to start the bot
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if is_sudo(message.from_user.id):
-        bot.reply_to(message, "Welcome! You can use the following commands:\n"
-                              "/m [direct download link] - Upload file directly to Google Drive\n"
-                              "/l [direct download link] - Upload file directly to Telegram\n"
-                              "/addsudo [user_id] - Add a user as sudo\n"
-                              "/lz [direct download link] - Unzip file and upload to Telegram\n"
-                              "/mz [direct download link] - Unzip file and upload to Google Drive\n"
-                              "/speedtest - Test the server's internet speed\n"
-                              "/cancel <gid> - Cancel a specific task by gid\n"
-                              "/cancelall - Cancel all active tasks (owner only)")
-    else:
-        bot.reply_to(message, "You do not have permission to use this bot.")
 
 # Run the bot
 if __name__ == '__main__':
